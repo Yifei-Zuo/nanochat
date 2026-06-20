@@ -26,7 +26,18 @@ export NANOCHAT_BASE_DIR="$REPO_DIR/output"
 DEPTH=24
 MODEL_TAG="parallax-d${DEPTH}"
 WANDB_PROJECT="parallax-nanochat"
+WANDB_RUN=$MODEL_TAG
 mkdir -p "$NANOCHAT_BASE_DIR"
+
+# Tee all console output (per-step training log, generated samples, errors) to a
+# timestamped file under the output dir, in addition to the terminal. (wandb captures
+# metrics when WANDB_RUN is set + you've run `wandb login`; the markdown summary report
+# is written to $NANOCHAT_BASE_DIR/report/.)
+mkdir -p "$NANOCHAT_BASE_DIR/logs"
+LOG_FILE="$NANOCHAT_BASE_DIR/logs/speedrun_parallax_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$LOG_FILE") 2>&1
+echo "[speedrun-parallax] console log -> $LOG_FILE"
+
 # NOTE: do not redirect TORCHINDUCTOR_CACHE_DIR to the NFS output dir here — under
 # multi-rank torchrun the ranks race on the shared cache files (FileNotFoundError). The
 # default node-local /tmp cache (as in runs/speedrun.sh) is multi-rank safe.
@@ -43,13 +54,6 @@ command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 [ -d ".venv" ] || uv venv
 uv sync --extra gpu --group parallax
 source .venv/bin/activate
-
-# -----------------------------------------------------------------------------
-# wandb setup. To log, run `wandb login` first and set WANDB_RUN to a run name.
-# Default "dummy" disables wandb logging.
-if [ -z "$WANDB_RUN" ]; then
-    WANDB_RUN=dummy
-fi
 
 # -----------------------------------------------------------------------------
 # Reset the report (writes to $NANOCHAT_BASE_DIR/report)
