@@ -30,6 +30,12 @@ mkdir -p "$NANOCHAT_BASE_DIR"
 # NOTE: do not redirect TORCHINDUCTOR_CACHE_DIR to the NFS output dir here — under
 # multi-rank torchrun the ranks race on the shared cache files (FileNotFoundError). The
 # default node-local /tmp cache (as in runs/speedrun.sh) is multi-rank safe.
+#
+# Triton compiles many kernel variants (Parallax autotune). Its default cache lives in the
+# (shared, often near-full) home dir ~/.triton/cache; with 8 DDP ranks writing there at
+# once the shared filesystem's locking/consistency breaks -> "triton cache" errors. Point
+# it at node-local /tmp instead (fast local FS, reliable multi-process locking, ample space).
+export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton-cache-$USER}"
 
 # -----------------------------------------------------------------------------
 # Python venv setup with uv (includes the parallax deps: triton + nvidia-cutlass-dsl)
