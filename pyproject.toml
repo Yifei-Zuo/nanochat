@@ -25,6 +25,17 @@ dev = [
     "python-dotenv>=1.2.1",
     "transformers>=4.57.3",
 ]
+# Parallax attention (Parameterized Local Linear Attention). The kernel source is
+# vendored at nanochat/parallax/, so this group only adds its runtime deps:
+#   - triton: the Triton training/prefill kernels + the portable Triton decode kernel.
+#   - nvidia-cutlass-dsl: the optimized SM90 (Hopper) CuTeDSL decode kernel. Pinned to
+#     4.1.0 — the cute kernels are built against it (newer releases break the bundled libs).
+# Both are Linux/CUDA only; markers keep `uv sync` resolvable on macOS/Windows.
+# Install alongside the gpu extra:  uv sync --extra gpu --group parallax
+parallax = [
+    "triton==3.5.1 ; sys_platform == 'linux'",
+    "nvidia-cutlass-dsl==4.1.0 ; sys_platform == 'linux'",
+]
 
 [tool.pytest.ini_options]
 markers = [

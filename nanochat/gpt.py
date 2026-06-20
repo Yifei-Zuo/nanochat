@@ -25,6 +25,14 @@ from nanochat.optim import MuonAdamW, DistMuonAdamW
 # Our custom Flash Attention module that automatically uses FA3 on Hopper+ and SDPA fallback elsewhere
 from nanochat.flash_attention import flash_attn
 
+# Parallax attention (opt-in via config.attn_impl="parallax"). Imported at module load so
+# the custom ops register once and the compiled forward never executes an `import`. Guarded
+# so the default "flash" path keeps no hard dependency on triton/parallax.
+try:
+    from nanochat import parallax_attn
+except Exception:  # pragma: no cover - triton/parallax unavailable
+    parallax_attn = None
+
 @dataclass
 class GPTConfig:
     sequence_len: int = 2048
@@ -37,6 +45,9 @@ class GPTConfig:
     # Characters: L=long (full context), S=short (quarter context)
     # Examples: "L"=all full context, "SL"=alternating, "SSL"=two short then one long
     window_pattern: str = "SSSL"
+    # Attention implementation: "flash" (default, FA3/SDPA softmax attention) or
+    # "parallax" (Parameterized Local Linear Attention; adds a second query r).
+    attn_impl: str = "flash"
 
 
 def norm(x):
@@ -72,9 +83,16 @@ class CausalSelfAttention(nn.Module):
         self.head_dim = self.n_embd // self.n_head
         assert self.n_embd % self.n_head == 0
         assert self.n_kv_head <= self.n_head and self.n_head % self.n_kv_head == 0
+        self.attn_impl = config.attn_impl
+        assert self.attn_impl in ("flash", "parallax"), f"unknown attn_impl: {self.attn_impl}"
+        if self.attn_impl == "parallax":
+            assert parallax_attn is not None, "attn_impl='parallax' requires triton + the vendored nanochat.parallax package"
         self.c_q = Linear(self.n_embd, self.n_head * self.head_dim, bias=False)
         self.c_k = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
         self.c_v = Linear(self.n_embd, self.n_kv_head * self.head_dim, bias=False)
+        # Parallax: second query r (Q-shaped). Only allocated when enabled, so the
+        # default "flash" model is byte-identical and Muon param groups are unchanged.
+        self.c_r = Linear(self.n_embd, self.n_head * self.head_dim, bias=False) if self.attn_impl == "parallax" else None
         self.c_proj = Linear(self.n_embd, self.n_embd, bias=False)
         self.ve_gate_channels = 12
         self.ve_gate = Linear(self.ve_gate_channels, self.n_kv_head, bias=False) if has_ve(layer_idx, config.n_layer) else None
@@ -101,21 +119,40 @@ class CausalSelfAttention(nn.Module):
         q = q * 1.2  # sharper attention (split scale between Q and K), TODO think through better
         k = k * 1.2
 
-        # Flash Attention (FA3 on Hopper+, PyTorch SDPA fallback elsewhere)
-        # window_size is (left, right) tuple: (N, 0) for causal, (-1, 0) for full context
+        # Parallax: compute the second query r and apply RoPE + QK-norm (but NOT the *1.2
+        # scale: it was tuned for the softmax temperature, whereas r·k is a raw reweight).
+        r = None
+        if self.c_r is not None:
+            r = self.c_r(x).view(B, T, self.n_head, self.head_dim)
+            r = apply_rotary_emb(r, cos, sin)
+            r = norm(r)
+
+        # Attention. window_size is (left, right) tuple: (N, 0) for causal, (-1, 0) for full.
         if kv_cache is None:
             # Training: causal attention with optional sliding window
-            y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+            if r is None:
+                y = flash_attn.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+            else:
+                y = parallax_attn.parallax_attn_func(q, r, k, v, causal=True, window_size=window_size)
         else:
-            # Inference: use flash_attn_with_kvcache which handles cache management
+            # Inference: *_with_kvcache handles cache insertion/management
             k_cache, v_cache = kv_cache.get_layer_cache(self.layer_idx)
-            y = flash_attn.flash_attn_with_kvcache(
-                q, k_cache, v_cache,
-                k=k, v=v,
-                cache_seqlens=kv_cache.cache_seqlens,
-                causal=True,
-                window_size=window_size,
-            )
+            if r is None:
+                y = flash_attn.flash_attn_with_kvcache(
+                    q, k_cache, v_cache,
+                    k=k, v=v,
+                    cache_seqlens=kv_cache.cache_seqlens,
+                    causal=True,
+                    window_size=window_size,
+                )
+            else:
+                y = parallax_attn.parallax_attn_with_kvcache(
+                    q, r, k_cache, v_cache,
+                    k=k, v=v,
+                    cache_seqlens=kv_cache.cache_seqlens,
+                    causal=True,
+                    window_size=window_size,
+                )
             # Advance position after last layer processes
             if self.layer_idx == kv_cache.n_layers - 1:
                 kv_cache.advance(T)
@@ -225,6 +262,8 @@ class GPT(nn.Module):
             torch.nn.init.uniform_(block.attn.c_q.weight, -s, s) # weights use Uniform to avoid outliers
             torch.nn.init.uniform_(block.attn.c_k.weight, -s, s)
             torch.nn.init.uniform_(block.attn.c_v.weight, -s, s)
+            if block.attn.c_r is not None: # Parallax second query (init like c_q)
+                torch.nn.init.uniform_(block.attn.c_r.weight, -s, s)
             torch.nn.init.zeros_(block.attn.c_proj.weight) # projections are zero
             torch.nn.init.uniform_(block.mlp.c_fc.weight, -s * 0.4, s * 0.4)  # 0.4x init scale for c_fc
             torch.nn.init.zeros_(block.mlp.c_proj.weight)

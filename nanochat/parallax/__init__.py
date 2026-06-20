@@ -1,0 +1,70 @@
+"""Parallax — Parameterized Local Linear Attention.
+
+Public entry points:
+  * ``parallax_func``       — Triton training (causal fwd+bwd, autograd).
+  * ``parallax_varlen_func`` — Triton variable-length (packed) training example.
+  * ``parallax_fwd``, ``parallax_bwd`` — raw Triton kernels with the
+                                          intermediate stats exposed.
+  * ``parallax_reference``  — fp32 PyTorch reference, runs anywhere.
+  * ``parallax.triton.parallax_decode`` — pure-Triton single-token decode
+                                          (any CUDA GPU; no extra deps).
+  * ``parallax_attn_with_kvcache`` — SM90 CuTeDSL decode against a KV cache,
+                                     canonical FA-style entry (extras: [decode]).
+  * ``parallax_decode``     — deprecated alias of the above (extras: [decode]).
+
+All entry points except the cute decode kernel work on any CUDA GPU and only
+require torch + triton. The cute-based decode kernel additionally needs
+``nvidia-cutlass-dsl`` and ``nvidia-cuda-python``; install the ``[decode]``
+extra to get it.
+"""
+
+from .reference import parallax_reference
+from .triton import (
+    parallax_func,
+    parallax_bwd,
+    parallax_fwd,
+    parallax_varlen_func,
+)
+
+# Optional extra: the cute decode kernel needs the [decode] stack. Substitute
+# a stub that raises on call so ``from parallax import parallax_decode`` still
+# works on a training-only install.
+try:
+    from .cute import (
+        GraphedDecode,
+        parallax_attn_with_kvcache,
+        parallax_decode,
+    )
+    decode_available: bool = True
+except ImportError as _cute_err:
+    decode_available = False
+    _cute_err_msg = (
+        "Parallax decode kernel requires the [decode] extra "
+        "(nvidia-cutlass-dsl + nvidia-cuda-python, Hopper SM90 only). "
+        "Install with:  pip install 'parallax[decode]'  "
+        "or  uv sync --extra decode\n"
+        f"Underlying import error: {_cute_err}"
+    )
+
+    def parallax_attn_with_kvcache(*args, **kwargs):  # type: ignore[misc]
+        raise ImportError(_cute_err_msg)
+
+    def parallax_decode(*args, **kwargs):  # type: ignore[misc]
+        raise ImportError(_cute_err_msg)
+
+    class GraphedDecode:  # type: ignore[no-redef]
+        def __init__(self, *args, **kwargs):
+            raise ImportError(_cute_err_msg)
+
+
+__all__ = [
+    "parallax_func",
+    "parallax_varlen_func",
+    "parallax_fwd",
+    "parallax_bwd",
+    "parallax_reference",
+    "parallax_attn_with_kvcache",
+    "parallax_decode",
+    "GraphedDecode",
+    "decode_available",
+]
