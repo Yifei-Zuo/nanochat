@@ -7,12 +7,14 @@
 # All artifacts are written under ./output (NOT ~/.cache/nanochat), in the save
 # folder "parallax-smoke" (i.e. output/base_checkpoints/parallax-smoke).
 #
-# Requires an environment with nanochat + the parallax deps and a GPU:
-#     uv sync --extra gpu --group parallax
-# Run it (override the interpreter with PYTHON=... if no venv is activated):
+# By default it sets up nanochat's own env with uv (`uv sync --extra gpu --group parallax`,
+# which creates ./.venv) and runs against it. Needs uv (https://docs.astral.sh/uv/) and a GPU.
+# Run it:
 #     bash runs/parallax_smoke.sh
 # On a Slurm cluster, e.g.:
 #     srun -p main --gres=gpu:1 bash runs/parallax_smoke.sh
+# Use a different interpreter (skips the uv setup) with:
+#     PYTHON=/path/to/python bash runs/parallax_smoke.sh
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,8 +24,19 @@ cd "$REPO_DIR"
 export NANOCHAT_BASE_DIR="$REPO_DIR/output"
 MODEL_TAG="parallax-smoke"
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-PYTHON="${PYTHON:-python}"
 mkdir -p "$NANOCHAT_BASE_DIR"
+
+# Python interpreter: default to nanochat's own uv-managed venv (./.venv). If it doesn't
+# exist yet, set it up with `uv sync` (needs uv + network; uv isn't needed once .venv
+# exists, e.g. on a GPU compute node). Override with PYTHON=/path/to/python.
+PYTHON="${PYTHON:-}"
+if [ -z "$PYTHON" ]; then
+    PYTHON="$REPO_DIR/.venv/bin/python"
+    if [ ! -x "$PYTHON" ]; then
+        command -v uv >/dev/null 2>&1 || { echo "[parallax-smoke] uv not found — install it (https://docs.astral.sh/uv/) or pass PYTHON=/path/to/python"; exit 1; }
+        uv sync --extra gpu --group parallax   # creates ./.venv (Python 3.12) with torch + the parallax deps
+    fi
+fi
 
 # Isolate the torch.compile (Inductor) cache under the output dir so the smoke test is
 # reproducible and never replays a stale graph from the shared /tmp/torchinductor cache.
