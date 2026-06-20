@@ -25,6 +25,12 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 PYTHON="${PYTHON:-python}"
 mkdir -p "$NANOCHAT_BASE_DIR"
 
+# Isolate the torch.compile (Inductor) cache under the output dir so the smoke test is
+# reproducible and never replays a stale graph from the shared /tmp/torchinductor cache.
+# Override via the env var if you want to share a cache. (The Triton autotune cache is
+# separate and stays in its default location.)
+export TORCHINDUCTOR_CACHE_DIR="${TORCHINDUCTOR_CACHE_DIR:-$NANOCHAT_BASE_DIR/.inductor_cache}"
+
 # Always remove this run's checkpoints on exit (success or failure).
 CKPT_DIR="$NANOCHAT_BASE_DIR/base_checkpoints/$MODEL_TAG"
 cleanup() { rm -rf "$CKPT_DIR"; echo "[parallax-smoke] removed checkpoints: $CKPT_DIR"; }
