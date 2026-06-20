@@ -38,6 +38,7 @@ from tasks.spellingbee import SimpleSpelling, SpellingBee
 parser = argparse.ArgumentParser(description="Supervised fine-tuning (SFT) the model")
 # Logging
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
+parser.add_argument("--wandb-project", type=str, default="nanochat-sft", help="wandb project name")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 # Model loading
@@ -87,7 +88,7 @@ else:
 
 # wandb logging init
 use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-sft", name=args.run, config=user_config)
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project=args.wandb_project, name=args.run, config=user_config)
 
 # Flash Attention status
 if not HAS_FA3:
