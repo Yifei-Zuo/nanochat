@@ -14,6 +14,7 @@ import argparse
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time
+from dataclasses import asdict
 import wandb
 import torch
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, is_ddp_initialized
@@ -407,15 +408,10 @@ while True:
             {
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
-                "model_config": {
-                    "sequence_len": args.max_seq_len,
-                    "vocab_size": tokenizer.get_vocab_size(),
-                    "n_layer": depth,
-                    "n_head": model.config.n_head,
-                    "n_kv_head": model.config.n_kv_head,
-                    "n_embd": model.config.n_embd,
-                    "window_pattern": model.config.window_pattern,
-                },
+                # Serialize the full GPTConfig via asdict so every field round-trips
+                # (incl. attn_impl) — a hand-built dict silently drops new fields and
+                # breaks chat_eval's strict load.
+                "model_config": asdict(orig_model.config),
                 "user_config": user_config, # inputs to the training script
             },
             rank=ddp_rank,
