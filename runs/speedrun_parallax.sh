@@ -20,6 +20,12 @@
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
+# Stop the whole pipeline if any stage fails (e.g. an OOM in base_train must not let
+# base_eval / chat_sft / chat_eval run on a missing/partial checkpoint). The console-log
+# tee below uses process substitution (not a pipe), so torchrun's exit code still reaches
+# set -e; pipefail covers any real pipelines.
+set -eo pipefail
+
 export OMP_NUM_THREADS=1
 # Output dir + model tag + wandb project (mirrors runs/parallax_smoke.sh; not ~/.cache).
 export NANOCHAT_BASE_DIR="$REPO_DIR/output"

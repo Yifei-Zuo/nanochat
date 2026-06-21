@@ -443,6 +443,11 @@ while True:
     results = {}
     if args.core_metric_every > 0 and (last_step or (step > 0 and step % args.core_metric_every == 0)):
         model.eval()
+        # Free cached/garbage GPU memory before the memory-heavy CORE eval so it doesn't
+        # OOM on top of the training footprint (the eval forwards full-vocab fp32 logits).
+        gc.collect()
+        if device_type == "cuda":
+            torch.cuda.empty_cache()
         with disable_fp8(orig_model):
             results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
@@ -458,6 +463,9 @@ while True:
     # use the original uncompiled model because the inputs keep changing shape
     if args.sample_every > 0 and master_process and (last_step or (step > 0 and step % args.sample_every == 0)):
         model.eval()
+        gc.collect()
+        if device_type == "cuda":
+            torch.cuda.empty_cache()
         prompts = [
             "The capital of France is",
             "The chemical symbol of gold is",
