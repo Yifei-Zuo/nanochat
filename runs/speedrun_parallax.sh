@@ -82,7 +82,7 @@ wait $DATASET_DOWNLOAD_PID
 # speedrun, plus --attn-impl=parallax and the parallax output tag / wandb project.
 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
     --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=16 --fp8 \
-    --attn-impl=parallax --model-tag="$MODEL_TAG" \
+    --attn-impl=parallax --model-tag="$MODEL_TAG" --startup-check=1 \
     --wandb-project="$WANDB_PROJECT" --run=$WANDB_RUN
 # Evaluate the base model: CORE metric, BPB on train/val, and draw samples
 torchrun --standalone --nproc_per_node=8 -m scripts.base_eval -- \
