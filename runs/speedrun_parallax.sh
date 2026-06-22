@@ -53,6 +53,12 @@ echo "[speedrun-parallax] console log -> $LOG_FILE"
 # once the shared filesystem's locking/consistency breaks -> "triton cache" errors. Point
 # it at node-local /tmp instead (fast local FS, reliable multi-process locking, ample space).
 export TRITON_CACHE_DIR="${TRITON_CACHE_DIR:-/tmp/triton-cache-$USER}"
+# Persist Triton autotune *results* (best config per shape) to that on-disk cache, so the
+# separate base_eval / chat_sft / chat_eval processes reuse base_train's tuned parallax
+# kernel instead of re-benchmarking every eval shape from a cold cache (~1h of cold
+# autotune saved in base_eval). Lives in TRITON_CACHE_DIR (node-local /tmp), so the
+# per-shape <kernel>.autotune.json files are shared across the job's stages.
+export TRITON_CACHE_AUTOTUNING="${TRITON_CACHE_AUTOTUNING:-1}"
 
 # -----------------------------------------------------------------------------
 # Python venv setup with uv (includes the parallax deps: triton + nvidia-cutlass-dsl)
@@ -84,9 +90,12 @@ torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
     --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=16 --fp8 \
     --attn-impl=parallax --model-tag="$MODEL_TAG" --startup-check=1 \
     --wandb-project="$WANDB_PROJECT" --run=$WANDB_RUN
-# Evaluate the base model: CORE metric, BPB on train/val, and draw samples
+# Evaluate the base model: CORE metric, BPB on train/val, and draw samples.
+# Cap CORE at 500 examples/task (--max-per-task=500) to match the in-training CORE evals:
+# same shape set => full autotune-cache reuse, and far fewer forwards than the default -1
+# (all examples) which otherwise makes this stage the slowest part of the run.
 torchrun --standalone --nproc_per_node=8 -m scripts.base_eval -- \
-    --model-tag="$MODEL_TAG" --device-batch-size=16
+    --model-tag="$MODEL_TAG" --device-batch-size=16 --max-per-task=500
 
 # -----------------------------------------------------------------------------
 # SFT (teach the model conversation special tokens, tool use, multiple choice)
@@ -94,7 +103,7 @@ curl -L -o "$NANOCHAT_BASE_DIR/identity_conversations.jsonl" https://karpathy-pu
 
 # chat_sft inherits the model config (incl. attn_impl=parallax) from the base checkpoint.
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- \
-    --model-tag="$MODEL_TAG" --device-batch-size=16 \
+    --model-tag="$MODEL_TAG" --device-batch-size=16 --chatcore-max-cat=500 \
     --wandb-project="$WANDB_PROJECT" --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft -g "$MODEL_TAG"
 

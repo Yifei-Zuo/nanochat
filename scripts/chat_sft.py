@@ -348,6 +348,9 @@ while True:
     # once in a while: evaluate the val bpb (all ranks participate)
     if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
         model.eval()
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
         val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
@@ -367,6 +370,11 @@ while True:
     chatcore_results = {}
     if args.chatcore_every > 0 and (last_step or (step > 0 and step % args.chatcore_every == 0)):
         model.eval()
+        # Free the training activation pool before the memory-heavy ChatCORE eval (which
+        # runs the uncompiled model + Engine on top of the SFT footprint) so it doesn't OOM.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         engine = Engine(orig_model, tokenizer)
         all_tasks = ['ARC-Easy', 'ARC-Challenge', 'MMLU', 'GSM8K', 'HumanEval', 'SpellingBee']
         categorical_tasks = {'ARC-Easy', 'ARC-Challenge', 'MMLU'}
@@ -382,6 +390,8 @@ while True:
                                 batch_size=args.device_batch_size, max_problems=max_problems)
             task_results[task_name] = acc
             print0(f"  {task_name}: {100*acc:.2f}%")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache() # release this task's eval buffers before the next task
         # Compute ChatCORE metrics (mean centered accuracy, ranges from 0=random to 1=perfect)
         def centered_mean(tasks):
             return sum((task_results[t] - baseline_accuracies[t]) / (1.0 - baseline_accuracies[t]) for t in tasks) / len(tasks)
@@ -396,6 +406,11 @@ while True:
             **{f"chatcore/{task_name}": acc for task_name, acc in task_results.items()},
         })
         model.train()
+        # Clean slate so training resume (or the checkpoint save below) doesn't OOM on a
+        # heap left fragmented by the eval.
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
     if last_step:
