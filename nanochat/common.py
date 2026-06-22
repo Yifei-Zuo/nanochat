@@ -103,9 +103,14 @@ def download_file_with_lock(url, filename, postprocess_fn=None):
         with urllib.request.urlopen(url) as response:
             content = response.read() # bytes
 
-        # Write to local file
-        with open(file_path, 'wb') as f:
+        # Write atomically (temp file + rename) so concurrent ranks -- which check
+        # os.path.exists(file_path) *before* acquiring this lock -- never observe a
+        # partially-written file. (Without this, e.g. SpellingBee's word list is created
+        # 0-bytes by the downloading rank while another rank reads it empty -> crash.)
+        tmp_path = f"{file_path}.tmp.{os.getpid()}"
+        with open(tmp_path, 'wb') as f:
             f.write(content)
+        os.replace(tmp_path, file_path)
         print(f"Downloaded to {file_path}")
 
         # Run the postprocess function if provided
