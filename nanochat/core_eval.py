@@ -5,6 +5,7 @@ https://arxiv.org/abs/2406.11794
 TODOs:
 - All tasks ~match except for squad. We get 31% reference is 37%. Figure out why.
 """
+import gc
 import random
 
 from jinja2 import Template
@@ -250,9 +251,19 @@ def evaluate_task(model, tokenizer, data, device, task_meta):
     world_size = dist.get_world_size() if dist.is_initialized() else 1
     correct = torch.zeros(len(data), dtype=torch.float32, device=device)
     # stride the examples to each rank
-    for idx in range(rank, len(data), world_size):
+    for count, idx in enumerate(range(rank, len(data), world_size)):
         is_correct = evaluate_example(idx, model, tokenizer, data, device, task_meta)
         correct[idx] = float(is_correct)
+        # GPU memory creeps up across the many eval examples/tasks (cyclic garbage that
+        # base_train's gc.disable() never collects, plus caching-allocator fragmentation
+        # from the varying sequence lengths) and OOMs on the longest task (e.g. hellaswag
+        # 10-shot) when memory is already tight right after training. Periodically collect
+        # cycles and release cached blocks to bound the growth (gc.collect handles the
+        # leak; empty_cache handles the fragmentation).
+        if (count + 1) % 25 == 0:
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     # sync results across all the processes if running distributed
     if world_size > 1:
         dist.barrier()

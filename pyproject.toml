@@ -34,7 +34,10 @@ dev = [
 # Install alongside the gpu extra:  uv sync --extra gpu --group parallax
 parallax = [
     "triton==3.5.1 ; sys_platform == 'linux'",
-    "nvidia-cutlass-dsl==4.1.0 ; sys_platform == 'linux'",
+    # cutlass-dsl (CuTeDSL SM90 decode) only ships wheels for Python >=3.12; the marker
+    # keeps `uv sync` resolvable on nanochat's full requires-python (>=3.10). Use a 3.12
+    # interpreter (see .python-version) to actually get the cute kernel.
+    "nvidia-cutlass-dsl==4.1.0 ; sys_platform == 'linux' and python_version >= '3.12'",
 ]
 
 [tool.pytest.ini_options]

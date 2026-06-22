@@ -41,6 +41,7 @@ print_banner()
 parser = argparse.ArgumentParser(description="Pretrain base model")
 # Logging
 parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('dummy' disables wandb logging)")
+parser.add_argument("--wandb-project", type=str, default="nanochat", help="wandb project name")
 # Runtime
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 # FP8 training
@@ -76,6 +77,7 @@ parser.add_argument("--core-metric-every", type=int, default=2000, help="evaluat
 parser.add_argument("--core-metric-max-per-task", type=int, default=500, help="examples per task for CORE metric")
 parser.add_argument("--sample-every", type=int, default=2000, help="sample from model every N steps (-1 = disable)")
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoints every N steps (-1 = only at end)")
+parser.add_argument("--startup-check", type=int, default=0, help="run a one-time startup check after the first training step (warms the generation/decode JIT and fails fast on any eval/engine OOM or crash) (1=on, 0=off)")
 # Output
 parser.add_argument("--model-tag", type=str, default=None, help="override model tag for checkpoint directory name")
 args = parser.parse_args()
@@ -98,7 +100,7 @@ print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
 
 # wandb logging init
 use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=args.run, config=user_config)
+wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project=args.wandb_project, name=args.run, config=user_config)
 
 # Flash Attention status
 from nanochat.flash_attention import USE_FA3
@@ -417,9 +419,42 @@ print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {
 while True:
     last_step = step == num_iterations # loop runs num_iterations+1 times so that we can eval/save at the end
     flops_so_far = num_flops_per_token * total_batch_size * step
+    ran_eval = False # set by the eval blocks below; triggers a post-eval allocator cleanup
+
+    # One-time startup check (after the first training step, so the optimizer state and the
+    # activation pool are allocated and memory is representative of the real footprint).
+    # Warms up the generation/CuteDSL-decode JIT and fails fast on any eval/engine OOM or
+    # crash here (~minutes in) instead of at the first scheduled CORE eval (~tens of minutes
+    # in). Lives in the eval region, before the training-step timer below, and step 1 is
+    # excluded from total_training_time, so this stage is NOT counted in training time.
+    if args.startup_check and step == 1:
+        print0("=" * 80)
+        print0("Startup check: warming generation/decode JIT + fail-fast eval (not timed)")
+        print0("=" * 80)
+        ran_eval = True
+        model.eval()
+        if device_type == "cuda":
+            gc.collect()
+            torch.cuda.empty_cache()
+        # (a) a small CORE eval — exercises the eval memory path + the post-eval allocator
+        #     cleanup + training resume, and downloads the eval bundle early (fails fast).
+        if args.core_metric_every != 0:
+            with disable_fp8(orig_model):
+                evaluate_core(orig_model, tokenizer, device, max_per_task=20)
+        # (b) a couple of generations — warms the CuteDSL decode JIT and smoke-tests the
+        #     inference Engine / attention-impl switch (master process only, like sampling).
+        if master_process:
+            engine = Engine(orig_model, tokenizer)
+            for prompt in ["The capital of France is", "If 5*x + 3 = 13, then x is"]:
+                tokens = tokenizer(prompt, prepend="<|bos|>")
+                with disable_fp8(orig_model):
+                    engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
+        model.train()
+        print0("Startup check passed.")
 
     # once in a while: evaluate the val bpb (all ranks participate)
     if args.eval_every > 0 and (last_step or step % args.eval_every == 0):
+        ran_eval = True
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
@@ -441,7 +476,13 @@ while True:
     # disable FP8 for evaluation to use BF16 for more consistent/accurate results
     results = {}
     if args.core_metric_every > 0 and (last_step or (step > 0 and step % args.core_metric_every == 0)):
+        ran_eval = True
         model.eval()
+        # Free cached/garbage GPU memory before the memory-heavy CORE eval so it doesn't
+        # OOM on top of the training footprint (the eval forwards full-vocab fp32 logits).
+        gc.collect()
+        if device_type == "cuda":
+            torch.cuda.empty_cache()
         with disable_fp8(orig_model):
             results = evaluate_core(orig_model, tokenizer, device, max_per_task=args.core_metric_max_per_task)
         print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
@@ -457,6 +498,9 @@ while True:
     # use the original uncompiled model because the inputs keep changing shape
     if args.sample_every > 0 and master_process and (last_step or (step > 0 and step % args.sample_every == 0)):
         model.eval()
+        gc.collect()
+        if device_type == "cuda":
+            torch.cuda.empty_cache()
         prompts = [
             "The capital of France is",
             "The chemical symbol of gold is",
@@ -473,6 +517,14 @@ while True:
                 sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
             print0(tokenizer.decode(sample[0]))
         model.train()
+
+    # After any eval, release the eval's cached blocks so training resumes from a clean,
+    # unfragmented allocator. The eval (run after a before-eval empty_cache that frees the
+    # training activation pool) leaves the heap fragmented; re-growing the full activation
+    # pool can then OOM on a large contiguous allocation even when total free memory suffices.
+    if ran_eval and device_type == "cuda":
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # save checkpoint: at the end of the run, or every save_every steps, except at the first step or the resume step
     if last_step or (step > 0 and step != args.resume_from_step and args.save_every > 0 and step % args.save_every == 0):
