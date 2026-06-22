@@ -57,7 +57,7 @@ IDENTITY="$NANOCHAT_BASE_DIR/identity_conversations.jsonl"
 # -----------------------------------------------------------------------------
 # SFT (inherits attn_impl=parallax + model config from the base checkpoint) + chat eval.
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- \
-    --model-tag="$MODEL_TAG" --device-batch-size=16 \
+    --model-tag="$MODEL_TAG" --device-batch-size=16 --chatcore-max-cat=500 \
     --wandb-project="$WANDB_PROJECT" --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft -g "$MODEL_TAG"
 

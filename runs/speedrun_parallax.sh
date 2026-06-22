@@ -103,7 +103,7 @@ curl -L -o "$NANOCHAT_BASE_DIR/identity_conversations.jsonl" https://karpathy-pu
 
 # chat_sft inherits the model config (incl. attn_impl=parallax) from the base checkpoint.
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- \
-    --model-tag="$MODEL_TAG" --device-batch-size=16 \
+    --model-tag="$MODEL_TAG" --device-batch-size=16 --chatcore-max-cat=500 \
     --wandb-project="$WANDB_PROJECT" --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_eval -- -i sft -g "$MODEL_TAG"
 
