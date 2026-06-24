@@ -7,7 +7,12 @@ requires-python = ">=3.10"
 dependencies = [
     "datasets>=4.0.0",
     "fastapi>=0.117.1",
-    "kernels>=0.11.7",
+    # Pinned: kernels>=0.14 changed get_kernel() to require an explicit version=/revision= and a
+    # publisher-trust check whose resolver 404s the `varunneal/flash-attention-3` repo that
+    # nanochat/flash_attention.py loads FA3 from (single-arg get_kernel(repo)). 0.11.7 keeps the
+    # pre-migration API; the FA3 build (torch29-cxx11-cu128) loads from the HF hub cache. Unpin only
+    # after migrating the flash_attention.py call to the new kernels API.
+    "kernels==0.11.7",
     "psutil>=7.1.0",
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",

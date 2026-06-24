@@ -628,7 +628,7 @@ while True:
             "train/dt": dt,
             "train/tok_per_sec": tok_per_sec,
             "train/mfu": mfu,
-            "train/epoch": epoch,
+            "train/epoch": dataloader_state_dict['epoch'],  # numeric (matches chat_sft); the pq/rg cursor stays in the console string above
         }
         wandb_run.log(log_data)
 

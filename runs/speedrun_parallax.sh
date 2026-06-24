@@ -30,10 +30,17 @@ export OMP_NUM_THREADS=1
 # Output dir + model tag + wandb project (mirrors runs/parallax_smoke.sh; not ~/.cache).
 export NANOCHAT_BASE_DIR="$REPO_DIR/output"
 DEPTH=24
-MODEL_TAG="parallax-d${DEPTH}"
+MODEL_TAG="${MODEL_TAG:-parallax-d${DEPTH}}"   # env-overridable for schedule/ablation variants
 WANDB_PROJECT="parallax-nanochat"
-WANDB_RUN=$MODEL_TAG
+WANDB_RUN=${WANDB_RUN:-$MODEL_TAG}
+# LR schedule: default is nanochat WSD (warmdown 0.65 -> 5% floor). Override with
+# WARMDOWN_RATIO=1.0 FINAL_LR_FRAC=0.0 for linear-decay-right-after-warmup to 0.
+WARMDOWN_RATIO="${WARMDOWN_RATIO:-0.65}"
+FINAL_LR_FRAC="${FINAL_LR_FRAC:-0.05}"
 mkdir -p "$NANOCHAT_BASE_DIR"
+# Per-run report dir (tag-namespaced) so variant runs don't clobber each other's report / report reset.
+export NANOCHAT_REPORT_DIR="$NANOCHAT_BASE_DIR/report/$MODEL_TAG"
+mkdir -p "$NANOCHAT_REPORT_DIR"
 
 # Tee all console output (per-step training log, generated samples, errors) to a
 # timestamped file under the output dir, in addition to the terminal. (wandb captures
@@ -88,7 +95,9 @@ wait $DATASET_DOWNLOAD_PID
 # speedrun, plus --attn-impl=parallax and the parallax output tag / wandb project.
 torchrun --standalone --nproc_per_node=8 -m scripts.base_train -- \
     --depth=$DEPTH --target-param-data-ratio=8 --device-batch-size=16 --fp8 \
-    --attn-impl=parallax --model-tag="$MODEL_TAG" --startup-check=1 \
+    --attn-impl=parallax \
+    --warmdown-ratio=$WARMDOWN_RATIO --final-lr-frac=$FINAL_LR_FRAC \
+    --model-tag="$MODEL_TAG" --startup-check=1 \
     --wandb-project="$WANDB_PROJECT" --run=$WANDB_RUN
 # Evaluate the base model: CORE metric, BPB on train/val, and draw samples.
 # Cap CORE at 500 examples/task (--max-per-task=500) to match the in-training CORE evals:
