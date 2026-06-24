@@ -209,8 +209,12 @@ def main():
         model, tokenizer, meta = load_model("base", device, phase="eval", model_tag=args.model_tag, step=args.step)
         sequence_len = meta["model_config"]["sequence_len"]
         token_bytes = get_token_bytes(device=device)
-        model_name = f"base_model (step {meta['step']})"
-        model_slug = f"base_model_{meta['step']:06d}"
+        # Tag the model name / CSV slug with the checkpoint's model tag so concurrent runs (e.g.
+        # parallax-d24 vs parallax-d24-lin) don't overwrite each other's base_eval/<slug>.csv. Falls back to
+        # "base_model" when no tag was given (the historical default-checkpoint behavior).
+        eval_tag = args.model_tag if args.model_tag else "base_model"
+        model_name = f"{eval_tag} (step {meta['step']})"
+        model_slug = f"{eval_tag}_{meta['step']:06d}"
 
     print0(f"Evaluating model: {model_name}")
     print0(f"Eval modes: {', '.join(sorted(eval_modes))}")

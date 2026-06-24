@@ -402,7 +402,11 @@ def get_report():
     from nanochat.common import get_base_dir, get_dist_info
     ddp, ddp_rank, ddp_local_rank, ddp_world_size = get_dist_info()
     if ddp_rank == 0:
-        report_dir = os.path.join(get_base_dir(), "report")
+        # NANOCHAT_REPORT_DIR lets a run write its report to a tag-specific directory so concurrent
+        # runs sharing one NANOCHAT_BASE_DIR (e.g. parallax-d24 vs parallax-d24-lin) don't overwrite each
+        # other's report sections / report.md (and `report reset` doesn't wipe the other's report).
+        # Unset => the historical <base_dir>/report.
+        report_dir = os.environ.get("NANOCHAT_REPORT_DIR") or os.path.join(get_base_dir(), "report")
         return Report(report_dir)
     else:
         return DummyReport()
